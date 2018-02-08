@@ -74,7 +74,7 @@ var TX = new function () {
                     continue;
                 var script = parseScript(inputs[hash][index].script);
                 var b64hash = Crypto.util.bytesToBase64(Crypto.util.hexToBytes(hash));
-                var txin = new Bitcoin.TransactionIn({outpoint: {hash: b64hash, index: index}, script: script, sequence: 4294967295});
+                var txin = new Bitcoin.TransactionIn({outpoint: {hash: b64hash, index: index, amount: inputs[hash][index].amount}, script: script, sequence: 4294967295});
                 selectedOuts.push(txin);
                 if (!resign)
                   sendTx.addInput(txin);
@@ -92,14 +92,26 @@ var TX = new function () {
         var hashType = 1;
         for (var i = 0; i < sendTx.ins.length; i++) {
             var connectedScript = selectedOuts[i].script;
-            var hash = sendTx.hashTransactionForSignature(connectedScript, i, hashType);
-            var pubKeyHash = connectedScript.simpleOutPubKeyHash();
-            var signature = eckey.sign(hash);
-            signature.push(parseInt(hashType, 10));
             var pubKey = eckey.getPub();
-            var script = new Bitcoin.Script();
-            script.writeBytes(signature);
-            script.writeBytes(pubKey);
+            if (!resign)
+                sendTx.witnesses.push([0x00]);
+            if (connectedScript.chunks.length == 3 && connectedScript.chunks[0] == 0xa9) {
+                var pubKeyHash = eckey.getPubKeyHash();
+                var hash = sendTx.hashTransactionForWitness(connectedScript, i, hashType, pubKeyHash);
+                var signature = eckey.sign(hash);
+                signature.push(parseInt(hashType, 10));
+                var script = new Bitcoin.Script();
+                script.writeBytes([0x00, 0x14].concat(pubKeyHash));
+                sendTx.witnesses[i] = [0x02].concat(signature.length).concat(signature).concat(pubKey.length).concat(pubKey);
+                sendTx.segwit = true;
+            } else {
+                var hash = sendTx.hashTransactionForSignature(connectedScript, i, hashType);
+                var signature = eckey.sign(hash);
+                signature.push(parseInt(hashType, 10));
+                var script = new Bitcoin.Script();
+                script.writeBytes(signature);
+                script.writeBytes(pubKey);
+            }
             sendTx.ins[i].script = script;
         }
         return sendTx;
@@ -229,7 +241,12 @@ var TX = new function () {
                 r['in'].push({'prev_out': prev_out, 'coinbase' : cb, 'sequence':seq});
             } else {
                 var ss = dumpScript(txin.script);
-                r['in'].push({'prev_out': prev_out, 'scriptSig' : ss, 'sequence':seq});
+                if (sendTx.segwit && sendTx.witnesses.length > i && sendTx.witnesses[i].length > 1) {
+                    var witness = Crypto.util.bytesToHex(sendTx.witnesses[i]);
+                    r['in'].push({'prev_out': prev_out, 'scriptSig' : ss, 'witness' : witness, 'sequence':seq});
+                } else {
+                    r['in'].push({'prev_out': prev_out, 'scriptSig' : ss, 'sequence':seq});
+                }
             }
         }
 

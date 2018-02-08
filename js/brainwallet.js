@@ -2,6 +2,7 @@
 
     var gen_from = 'pass';
     var gen_compressed = false;
+    var gen_segwit = false;
     var gen_eckey = null;
     var gen_pt = null;
     var gen_ps_reset = false;
@@ -9,6 +10,7 @@
     var timeout = null;
 
     var PUBLIC_KEY_VERSION = 0;
+    var P2SH_KEY_VERSION = 5;
     var PRIVATE_KEY_VERSION = 0x80;
     var ADDRESS_URL_PREFIX = 'http://blockchain.info'
 
@@ -200,7 +202,8 @@
     function genOnChangeCompressed() {
         setErrorState($('#hash'), false);
         setErrorState($('#sec'), false);
-        gen_compressed = $(this).attr('name') == 'compressed';
+        gen_segwit = $(this).attr('name') == 'segwit-p2sh';
+        gen_compressed = $(this).attr('name') == 'compressed' || gen_segwit;
         gen_eckey.pub = getEncoded(gen_pt, gen_compressed);
         gen_eckey.pubKeyHash = Bitcoin.Util.sha256ripe160(gen_eckey.pub);
         gen_update();
@@ -222,6 +225,7 @@
 
         var eckey = gen_eckey;
         var compressed = gen_compressed;
+        var segwit = gen_segwit;
 
         var hash_str = pad($('#hash').val(), 64, '0');
         var hash = Crypto.util.hexToBytes(hash_str);
@@ -231,8 +235,15 @@
         var h160 = Crypto.util.bytesToHex(hash160);
         $('#h160').val(h160);
 
-        var addr = new Bitcoin.Address(hash160);
-        addr.version = PUBLIC_KEY_VERSION;
+        var addr;
+        if (!segwit) {
+            addr = new Bitcoin.Address(hash160);
+            addr.version = PUBLIC_KEY_VERSION;
+        } else {
+            script_hash = Bitcoin.Util.sha256ripe160([0x00, 0x14].concat(hash160));
+            addr = new Bitcoin.Address(script_hash);
+            addr.version = P2SH_KEY_VERSION;
+        }
         $('#addr').val(addr);
 
         var payload = hash;
@@ -1280,6 +1291,7 @@
         var addr = '';
         var eckey = null;
         var compressed = false;
+        var segwit = false;
         try {
             var res = parseBase58Check(sec); 
             var privkey_version = res[0];
@@ -1291,14 +1303,21 @@
             if (payload.length > 32) {
                 payload.pop();
                 compressed = true;
+                segwit = gen_segwit;
             }
             eckey = new Bitcoin.ECKey(payload);
             var curve = getSECCurveByName("secp256k1");
             var pt = curve.getG().multiply(eckey.priv);
             eckey.pub = getEncoded(pt, compressed);
             eckey.pubKeyHash = Bitcoin.Util.sha256ripe160(eckey.pub);
-            addr = new Bitcoin.Address(eckey.getPubKeyHash());
-            addr.version = PUBLIC_KEY_VERSION;
+            if (!segwit) {
+                addr = new Bitcoin.Address(eckey.getPubKeyHash());
+                addr.version = (version-128)&255;
+            } else {
+                script_hash = Bitcoin.Util.sha256ripe160([0x00, 0x14].concat(eckey.pubKeyHash));
+                addr = new Bitcoin.Address(script_hash);
+                addr.version = P2SH_KEY_VERSION;
+            }
 
             if (privkey_version!=PRIVATE_KEY_VERSION)
             {

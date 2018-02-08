@@ -1934,9 +1934,11 @@ for (var i in Crypto.util)
 }
 )("undefined" != typeof Bitcoin ? Bitcoin : module.exports);
 Bitcoin.Address = function(e) {
-    "string" == typeof e && (e = Bitcoin.Address.decodeString(e)),
-    this.hash = e,
-    this.version = 0
+    if ("string" == typeof e) {
+        e = Bitcoin.Address.decodeString(e), this.hash = e.hash, this.version = e.version
+    } else {
+        this.hash = e, this.version = 0
+    }
 }
 ,
 Bitcoin.Address.prototype.toString = function() {
@@ -1966,9 +1968,9 @@ Bitcoin.Address.decodeString = function(e) {
     if (r[0] != t[21] || r[1] != t[22] || r[2] != t[23] || r[3] != t[24])
         throw "Checksum validation failed!";
     var i = n.shift();
-    if (i != 0)
+    if (i != 0 && i != 5)
         throw "Version " + i + " not supported!";
-    return n
+    return { 'hash': n, 'version': i };
 }
 ;
 function integerToBytes(e, t) {
@@ -2556,12 +2558,10 @@ Bitcoin.ECKey = function() {
     ,
     Script.createOutputScript = function(e) {
         var t = new Script;
-        return t.writeOp(OP_DUP),
-        t.writeOp(OP_HASH160),
-        t.writeBytes(e.hash),
-        t.writeOp(OP_EQUALVERIFY),
-        t.writeOp(OP_CHECKSIG),
-        t
+        if (e.version == 0)
+            return t.writeOp(OP_DUP), t.writeOp(OP_HASH160), t.writeBytes(e.hash), t.writeOp(OP_EQUALVERIFY), t.writeOp(OP_CHECKSIG), t
+        else /* e.version == 5 */
+            return t.writeOp(OP_HASH160), t.writeBytes(e.hash), t.writeOp(OP_EQUAL), t
     }
     ,
     Script.prototype.extractAddresses = function(e) {
@@ -2610,6 +2610,8 @@ Bitcoin.ECKey = function() {
         this.lock_time = 0,
         this.ins = [],
         this.outs = [],
+        this.witnesses = [],
+        this.segwit = false,
         this.timestamp = null,
         this.block = null;
         if (e) {
@@ -2664,7 +2666,8 @@ Bitcoin.ECKey = function() {
     ,
     t.prototype.serialize = function() {
         var e = [];
-        e = e.concat(Crypto.util.wordsToBytes([parseInt(this.version)]).reverse()),
+        e = e.concat(Crypto.util.wordsToBytes([parseInt(this.version)]).reverse());
+        if (this.segwit) e = e.concat([0x00, 0x01]);
         e = e.concat(Bitcoin.Util.numToVarInt(this.ins.length));
         for (var t = 0; t < this.ins.length; t++) {
             var n = this.ins[t];
@@ -2682,6 +2685,11 @@ Bitcoin.ECKey = function() {
             var r = i.script.buffer;
             e = e.concat(Bitcoin.Util.numToVarInt(r.length)),
             e = e.concat(r)
+        }
+        if (this.segwit) {
+            for (var t = 0; t < this.witnesses.length; t++) {
+                e = e.concat(this.witnesses[t]);
+            }
         }
         return e = e.concat(Crypto.util.wordsToBytes([parseInt(this.lock_time)]).reverse()),
         e
@@ -2712,6 +2720,37 @@ Bitcoin.ECKey = function() {
         return Crypto.SHA256(l, {
             asBytes: !0
         })
+    }
+    ,
+    t.prototype.hashTransactionForWitness = function(t, n, r, pkh) {
+        var e = [];
+        e = e.concat(Crypto.util.wordsToBytes([parseInt(this.version)]).reverse());
+        var prevOuts = [], prevSeqs = [];
+        for (var a = 0; a < this.ins.length; a++) {
+            var inX = this.ins[a];
+            prevOuts = prevOuts.concat(Crypto.util.base64ToBytes(inX.outpoint.hash)).concat(Crypto.util.wordsToBytes([parseInt(inX.outpoint.index)]).reverse());
+            prevSeqs = prevSeqs.concat(Crypto.util.wordsToBytes([parseInt(inX.sequence)]).reverse());
+        }
+        e = e.concat(Crypto.SHA256(Crypto.SHA256(prevOuts, {asBytes: !0}), {asBytes: !0}));
+        e = e.concat(Crypto.SHA256(Crypto.SHA256(prevSeqs, {asBytes: !0}), {asBytes: !0}));
+        e = e.concat(Crypto.util.base64ToBytes(this.ins[n].outpoint.hash).concat(Crypto.util.wordsToBytes([parseInt(this.ins[n].outpoint.index)]).reverse()));
+        e = e.concat([0x19, 0x76, 0xa9, 0x14]).concat(pkh).concat([0x88, 0xac]);
+        var amount = this.ins[n].outpoint.amount.toString(16);
+        while (amount.length < 16)
+            amount = "0" + amount;
+        e = e.concat(Crypto.util.hexToBytes(amount).reverse());
+        e = e.concat([0xff, 0xff, 0xff, 0xff]);
+        var outputs = [];
+        for (var a = 0; a < this.outs.length; a++) {
+            var outX = this.outs[a];
+            outputs = outputs.concat(outX.value);
+            var outScript = outX.script.buffer;
+            outputs = outputs.concat(Bitcoin.Util.numToVarInt(outScript.length)).concat(outScript);
+        }
+        e = e.concat(Crypto.SHA256(Crypto.SHA256(outputs, {asBytes: !0}), {asBytes: !0}));
+        e = e.concat(Crypto.util.wordsToBytes([parseInt(this.lock_time)]).reverse());
+        e = e.concat(Crypto.util.wordsToBytes([parseInt(r)]).reverse());
+        return Crypto.SHA256(Crypto.SHA256(e, {asBytes: !0}), {asBytes: !0});
     }
     ,
     t.prototype.getHash = function() {
